@@ -10,7 +10,10 @@ Daily foreign exchange analysis with a React dashboard, FastAPI, Microsoft SQL S
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+npm.cmd install
 ```
+
+On macOS or Linux use `python3 -m venv .venv` and `.venv/bin/pip install -r backend/requirements.txt`.
 
 2. Copy `.env.example` to `.env` and set strong local values for both secrets.
 3. Run the whole application with one command:
@@ -19,8 +22,14 @@ python -m venv .venv
 npm.cmd run start
 ```
 
+`npm run start` builds the React bundle and starts the API, which serves that bundle from the same origin: one command, one URL, one process. It finds `.venv` automatically on Windows, macOS, and Linux; set `PYTHON` to override the interpreter, or `HOST`/`PORT` to move the server.
+
 4. Open `http://127.0.0.1:8000`; the API documentation is at `http://127.0.0.1:8000/docs`.
-5. Sync daily history, then train and explicitly approve a candidate model:
+5. Type any currency in the dashboard search box (`EURUSD`, `USDVND`, or just `vnd`). The first search for a pair ingests its daily history, fits a Hidden Markov Model, and renders two charts: the OHLC price history and a simulated forecast path with a 10-90% band. Set `AUTO_PREPARE_PAIRS=false` in `.env` to keep ingestion and model approval admin-only.
+
+### Admin pipeline (explicit approval)
+
+Sync daily history, then train and explicitly approve a candidate model:
 
 ```powershell
 $key = (Get-Content .env | Where-Object { $_ -like 'ADMIN_API_KEY=*' }) -replace '^ADMIN_API_KEY=', ''
@@ -44,6 +53,9 @@ Refresh the dashboard after approval. Sync is an idempotent daily OHLC upsert. A
 - `GET /api/market/{pair}?timeframe=1d&limit=250` returns stored OHLC and stale-data metadata. Use a path value such as `EURUSD`; both `EURUSD` and the internal `EUR/USD` form are accepted.
 - `GET /api/predictions/{pair}?timeframe=1d` returns current-state posterior and next-state transition probabilities separately, plus `as_of_timestamp`, `forecast_horizon`, and `forecast_for_timestamp`.
 - `GET /api/models/{pair}?timeframe=1d` returns approved model lineage.
+- `GET /api/currencies?q=vnd` returns ranked pair suggestions for the search box.
+- `GET /api/forecast/{pair}?timeframe=1d&horizon=30` returns a Monte Carlo price path (`expected`, `lower`, `upper` per future session) simulated from the approved HMM.
+- `GET /api/search/{pair}?timeframe=1d&horizon=30` is the single call behind the search box: it prepares the pair when allowed, then returns history, prediction, forecast, and model lineage together.
 - `POST /api/admin/sync/{pair}` fetches and validates daily Yahoo Finance bars.
 - `POST /api/admin/train/{pair}` trains a chronological 80/20 candidate and records validation log likelihood.
 - `POST /api/admin/predict/{pair}` creates and stores a forecast from the approved model.

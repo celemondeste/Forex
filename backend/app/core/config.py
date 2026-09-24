@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     default_pair: str = "EUR/USD"
     default_timeframe: str = "1d"
     admin_api_key: str = ""
+    auto_prepare_pairs: bool = True
+    auto_prepare_period: str = "5y"
+    auto_prepare_stale_days: int = 4
+    forecast_horizon_days: int = 30
 
     model_config = SettingsConfigDict(env_file=(".env", "backend/.env"), extra="ignore")
 

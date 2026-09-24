@@ -14,6 +14,24 @@ Returns `pair`, `timeframe`, chronological `bars` (`timestamp`, `open`, `high`, 
 
 Returns `current_state`, `current_regime`, `current_probabilities`, `next_state_probabilities`, `signal`, `as_of_timestamp`, `forecast_horizon`, `forecast_for_timestamp`, and `model_version`. The two probability maps are separate: posterior probability describes the inferred state at the last observed bar; transition probability describes the state expected one step after it.
 
+## Currency search suggestions
+
+`GET /api/currencies?q=vnd&limit=12`
+
+Returns ranked pairs as `pair` (`USD/VND`), `symbol` (`USDVND`), and a human `label`. An empty query returns the popular pairs.
+
+## Price forecast
+
+`GET /api/forecast/{pair}?timeframe=1d&horizon=30`
+
+Returns `points` (`timestamp`, `expected`, `lower`, `upper`), `last_close`, `expected_return`, `simulations`, `horizon_days`, and `model_version`. Future prices come from Monte Carlo paths: regimes are resampled through the fitted transition matrix and each step draws a log return from that regime's Gaussian emission. `expected` is the median path; `lower`/`upper` are the 10th and 90th percentiles. Requires an approved model, so this route returns 404 for a pair that has never been prepared.
+
+## Pair search
+
+`GET /api/search/{pair}?timeframe=1d&limit=250&horizon=30`
+
+Single call behind the dashboard search box. When `AUTO_PREPARE_PAIRS` is enabled it ingests missing or stale daily history and, if no model is approved for the pair, trains one and approves it automatically (its metrics carry `auto_approved: true`). Returns the market payload plus `prepared_steps`, `prediction`, `forecast`, and `model`. Set `AUTO_PREPARE_PAIRS=false` to keep ingestion and approval admin-only.
+
 ## Approved model
 
 `GET /api/models/{pair}?timeframe=1d`

@@ -12,7 +12,13 @@ The browser dashboard is a React/Vite client of FastAPI. FastAPI owns ingestion,
 6. An admin prediction run stores a forecast using the approved artifact. Read endpoints return current and next-state probabilities separately without mutating data.
 7. The React dashboard reads normalized REST endpoints and exposes missing model, loading, stale data, and API error states.
 
-There is no request-time training, browser-to-yfinance access, order execution, Redis, or WebSocket path in the MVP. SQL schema is created automatically in development. Production deployment should apply reviewed Alembic migrations before disabling development schema creation.
+## Searching an arbitrary pair
+
+The dashboard search box calls `GET /api/search/{pair}`. With `AUTO_PREPARE_PAIRS` enabled (the default for local use) that route performs steps 1-5 on demand for a pair nobody has prepared yet, marking the resulting model `auto_approved` so it stays distinguishable from an admin-approved lineage. Disabling the flag restores the strictly admin-driven pipeline. The forecast chart is a Monte Carlo expansion of the same approved artifact: regimes are resampled through the transition matrix and log returns are drawn from each regime's Gaussian emission, then compounded onto the last close.
+
+One process serves both tiers: `npm start` builds the Vite bundle and starts uvicorn, which serves `dist/` for any non-`/api` path, so the dashboard and API share an origin.
+
+There is no browser-to-yfinance access, order execution, Redis, or WebSocket path in the MVP. SQL schema is created automatically in development. Production deployment should apply reviewed Alembic migrations before disabling development schema creation.
 
 ## Current scope
 
