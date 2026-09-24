@@ -8,3 +8,5 @@ backend/**/__pycache__/
 backend/.pytest_cache/
 node_modules/
 dist/
+backend/venv/
+venv/
