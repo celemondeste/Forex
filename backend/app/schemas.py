@@ -37,6 +37,31 @@ class ModelResponse(BaseModel):
     metrics: dict
 
 
+class ForecastPoint(BaseModel):
+    timestamp: datetime
+    expected: float
+    lower: float
+    upper: float
+
+
+class ForecastResponse(BaseModel):
+    pair: str
+    timeframe: str
+    model_version: str
+    as_of_timestamp: datetime
+    last_close: float
+    horizon_days: int
+    simulations: int
+    expected_return: float
+    points: list[ForecastPoint]
+
+
+class CurrencyPair(BaseModel):
+    pair: str
+    symbol: str
+    label: str
+
+
 class PredictionResponse(BaseModel):
     pair: str
     timeframe: str
@@ -49,3 +74,15 @@ class PredictionResponse(BaseModel):
     next_state_probabilities: dict[str, float]
     signal: Literal["BUY", "HOLD", "SELL"]
     model_version: str
+
+
+class SearchResponse(BaseModel):
+    pair: str
+    timeframe: str
+    bars: list[MarketBar]
+    as_of_timestamp: datetime | None
+    stale: bool
+    prepared_steps: list[str]
+    prediction: PredictionResponse | None = None
+    forecast: ForecastResponse | None = None
+    model: ModelResponse | None = None

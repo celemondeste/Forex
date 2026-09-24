@@ -7,7 +7,10 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.models import HmmModel, OhlcBar
 from app.db.session import get_db
-from app.schemas import HealthResponse, MarketResponse, ModelResponse, PredictionResponse
+from app.schemas import (CurrencyPair, ForecastResponse, HealthResponse, MarketResponse,
+                         ModelResponse, PredictionResponse, SearchResponse)
+from app.services import currencies
+from app.services.forecast import forecast_prices, prepare_pair
 from app.services.market_data import sync_daily_pair
 from app.services.modeling import predict, train_candidate
 
@@ -39,7 +42,10 @@ def health(db: Session = Depends(get_db)):
 
 @router.get("/market/{pair}", response_model=MarketResponse)
 def market(pair: str, timeframe: str = Query("1d", pattern="^1d$"), limit: int = Query(500, ge=1, le=5000), db: Session = Depends(get_db)):
-    pair = normalize_pair(pair)
+    return market_payload(db, normalize_pair(pair), timeframe, limit)
+
+
+def market_payload(db: Session, pair: str, timeframe: str, limit: int) -> dict:
     bars = db.query(OhlcBar).filter_by(pair=pair, timeframe=timeframe).order_by(OhlcBar.timestamp.desc()).limit(limit).all()
     bars.reverse()
     latest = bars[-1].timestamp if bars else None
@@ -47,16 +53,65 @@ def market(pair: str, timeframe: str = Query("1d", pattern="^1d$"), limit: int =
     return {"pair": pair, "timeframe": timeframe, "bars": bars, "as_of_timestamp": latest, "stale": stale}
 
 
-@router.get("/models/{pair}", response_model=ModelResponse)
-def model_metadata(pair: str, timeframe: str = Query("1d", pattern="^1d$"), db: Session = Depends(get_db)):
-    pair = normalize_pair(pair)
+def model_payload(db: Session, pair: str, timeframe: str) -> dict | None:
     model = db.query(HmmModel).filter_by(pair=pair, timeframe=timeframe, status="approved").order_by(HmmModel.trained_at.desc()).first()
     if not model:
-        raise HTTPException(404, "No approved model is available")
+        return None
     return {"model_version": model.model_version, "pair": pair, "timeframe": timeframe,
         "status": model.status, "feature_version": model.feature_version,
         "artifact_hash": model.artifact_hash, "trained_at": model.trained_at,
         "metrics": model.metrics_json}
+
+
+@router.get("/models/{pair}", response_model=ModelResponse)
+def model_metadata(pair: str, timeframe: str = Query("1d", pattern="^1d$"), db: Session = Depends(get_db)):
+    payload = model_payload(db, normalize_pair(pair), timeframe)
+    if not payload:
+        raise HTTPException(404, "No approved model is available")
+    return payload
+
+
+@router.get("/currencies", response_model=list[CurrencyPair])
+def currency_search(q: str = Query("", max_length=32), limit: int = Query(12, ge=1, le=50)):
+    return currencies.search(q, limit)
+
+
+@router.get("/forecast/{pair}", response_model=ForecastResponse)
+def forecast(pair: str, timeframe: str = Query("1d", pattern="^1d$"),
+             horizon: int = Query(settings.forecast_horizon_days, ge=1, le=180),
+             db: Session = Depends(get_db)):
+    try:
+        return forecast_prices(db, normalize_pair(pair), timeframe, horizon)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/search/{pair}", response_model=SearchResponse)
+def search(pair: str, timeframe: str = Query("1d", pattern="^1d$"),
+           limit: int = Query(250, ge=1, le=5000),
+           horizon: int = Query(settings.forecast_horizon_days, ge=1, le=180),
+           db: Session = Depends(get_db)):
+    """One call behind the search box: ingest and train on demand, then return history and forecast."""
+    pair = normalize_pair(pair)
+    try:
+        prepared = prepare_pair(db, pair, timeframe)
+    except Exception as exc:
+        raise HTTPException(502, f"Could not prepare {pair}: {exc}") from exc
+
+    payload = market_payload(db, pair, timeframe, limit)
+    if not payload["bars"]:
+        raise HTTPException(404, f"No daily history is available for {pair}")
+    payload["prepared_steps"] = prepared["steps"]
+    payload["model"] = model_payload(db, pair, timeframe)
+    try:
+        payload["prediction"] = predict(db, pair, timeframe)
+        payload["forecast"] = forecast_prices(db, pair, timeframe, horizon)
+    except (LookupError, ValueError, RuntimeError):
+        payload["prediction"] = None
+        payload["forecast"] = None
+    return payload
 
 
 @router.get("/predictions/{pair}", response_model=PredictionResponse)

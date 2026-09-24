@@ -63,14 +63,18 @@ def train_candidate(db: Session, pair: str, timeframe: str = "1d") -> dict:
     return {"model_version": version, "status": record.status, "metrics": record.metrics_json}
 
 
-def predict(db: Session, pair: str, timeframe: str = "1d", persist: bool = False) -> dict:
+def load_approved_bundle(db: Session, pair: str, timeframe: str = "1d") -> tuple[HmmModel, dict]:
     record = db.scalar(select(HmmModel).where(HmmModel.pair == pair,
         HmmModel.timeframe == timeframe, HmmModel.status == "approved").order_by(HmmModel.trained_at.desc()))
     if not record:
         raise LookupError("No approved model is available for this pair and timeframe")
     if hashlib.sha256(Path(record.artifact_uri).read_bytes()).hexdigest() != record.artifact_hash:
         raise RuntimeError("Approved model artifact hash does not match the registry")
-    bundle = joblib.load(record.artifact_uri)
+    return record, joblib.load(record.artifact_uri)
+
+
+def predict(db: Session, pair: str, timeframe: str = "1d", persist: bool = False) -> dict:
+    record, bundle = load_approved_bundle(db, pair, timeframe)
     frame = load_frame(db, pair, timeframe)
     features = build_features(frame)
     x = ((features - pd.Series(bundle["mean"])) / pd.Series(bundle["std"])).to_numpy()
