@@ -1,0 +1,10 @@
+.env
+.venv/
+backend/.env
+backend/forex.db
+backend/models/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.pytest_cache/
+node_modules/
+dist/

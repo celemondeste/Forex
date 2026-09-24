@@ -1,0 +1,24 @@
+{
+  "name": "markov-fx-lab",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "vite build && cd backend && ..\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000",
+    "dev:backend": "cd backend && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload",
+    "dev:all": "concurrently -n FRONTEND,BACKEND -c blue,green \"npm run dev\" \"npm run dev:backend\""
+  },
+  "dependencies": {
+    "@fluentui/react-components": "^9.74.8",
+    "@vitejs/plugin-react": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "vite": "latest"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.5"
+  }
+}
