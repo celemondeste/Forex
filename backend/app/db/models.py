@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, JSON, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
@@ -37,7 +37,7 @@ class HmmModel(Base):
     framework_version: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(16), default="candidate", index=True)
     metrics_json: Mapped[dict] = mapped_column(JSON, default=dict)
-    trained_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    trained_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class Prediction(Base):
@@ -55,7 +55,7 @@ class Prediction(Base):
     current_probabilities: Mapped[dict] = mapped_column(JSON)
     next_state_probabilities: Mapped[dict] = mapped_column(JSON)
     signal: Mapped[str] = mapped_column(String(8))
-    predicted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    predicted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class DataSyncRun(Base):
@@ -64,7 +64,7 @@ class DataSyncRun(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     pair: Mapped[str] = mapped_column(String(16), index=True)
     timeframe: Mapped[str] = mapped_column(String(8))
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="running")
     rows_fetched: Mapped[int] = mapped_column(Integer, default=0)

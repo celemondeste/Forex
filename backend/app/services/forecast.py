@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.db.models import HmmModel, OhlcBar
+from app.db.models import DataSyncRun, HmmModel, OhlcBar
 from app.services.market_data import sync_daily_pair
 from app.services.modeling import load_approved_bundle, load_frame, train_candidate
 from app.services.features import build_features
@@ -14,6 +14,8 @@ from app.services.features import build_features
 MINIMUM_BARS = 260
 SIMULATIONS = 600
 SIMULATION_SEED = 7
+STALE_SYNC_RETRY_AFTER = timedelta(hours=1)
+INCREMENTAL_SYNC_BARS = 30
 
 
 def bar_count(db: Session, pair: str, timeframe: str) -> int:
@@ -47,8 +49,15 @@ def prepare_pair(db: Session, pair: str, timeframe: str = "1d") -> dict:
     stale_after = settings.auto_prepare_stale_days
     latest = latest_timestamp(db, pair, timeframe)
     outdated = latest is None or (datetime.now(timezone.utc) - latest.replace(tzinfo=timezone.utc)).days > stale_after
-    if stored < MINIMUM_BARS or outdated:
-        sync_daily_pair(db, pair, period=settings.auto_prepare_period)
+    last_attempt = db.scalar(select(DataSyncRun.started_at).where(
+        DataSyncRun.pair == pair, DataSyncRun.timeframe == timeframe,
+    ).order_by(DataSyncRun.started_at.desc()).limit(1))
+    recently_attempted = last_attempt is not None and (
+        datetime.now(timezone.utc) - last_attempt.replace(tzinfo=timezone.utc) < STALE_SYNC_RETRY_AFTER
+    )
+    if (stored < MINIMUM_BARS or outdated) and not (stored >= MINIMUM_BARS and recently_attempted):
+        outputsize = settings.auto_prepare_outputsize if stored < MINIMUM_BARS else INCREMENTAL_SYNC_BARS
+        sync_daily_pair(db, pair, outputsize=outputsize)
         steps.append("synced")
 
     if approved_model(db, pair, timeframe) is None:
@@ -62,7 +71,7 @@ def prepare_pair(db: Session, pair: str, timeframe: str = "1d") -> dict:
 
 
 def future_sessions(last: pd.Timestamp, horizon: int) -> list[pd.Timestamp]:
-    return list(pd.bdate_range(start=last + pd.Timedelta(days=1), periods=horizon, tz=last.tz))
+    return list(pd.bdate_range(start=last + pd.offsets.BDay(1), periods=horizon, tz=last.tz))
 
 
 def simulate_paths(bundle: dict, posterior: np.ndarray, last_close: float, horizon: int) -> np.ndarray:

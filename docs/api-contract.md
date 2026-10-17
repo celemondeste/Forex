@@ -1,6 +1,6 @@
 # API contract
 
-Pair identifiers are stored as `AAA/BBB`. Path parameters accept compact symbols such as `EURUSD`; the MVP timeframe is `1d`. Times are UTC. Market data is read from the backend database; the browser never calls yfinance.
+Pair identifiers are stored as `AAA/BBB`. Path parameters accept compact symbols such as `EURUSD`; the MVP timeframe is `1d`. Times are UTC. Market data is read from the backend database; the browser never calls Twelve Data directly.
 
 ## Market history
 
@@ -31,6 +31,8 @@ Returns `points` (`timestamp`, `expected`, `lower`, `upper`), `last_close`, `exp
 `GET /api/search/{pair}?timeframe=1d&limit=250&horizon=30`
 
 Single call behind the dashboard search box. When `AUTO_PREPARE_PAIRS` is enabled it ingests missing or stale daily history and, if no model is approved for the pair, trains one and approves it automatically (its metrics carry `auto_approved: true`). Returns the market payload plus `prepared_steps`, `prediction`, `forecast`, and `model`. Set `AUTO_PREPARE_PAIRS=false` to keep ingestion and approval admin-only.
+
+The visible dashboard calls this route again every five minutes by default (`VITE_CHART_REFRESH_SECONDS`, minimum 60). An existing pair's stale-history sync is limited to one attempt per hour and requests 30 recent bars; the initial history load still uses `AUTO_PREPARE_OUTPUTSIZE`. The separate `/api/live/{pair}` route is polled every minute to update the chart's temporary current-day candle. The browser preserves its last successful response if an automatic refresh fails.
 
 ## Approved model
 

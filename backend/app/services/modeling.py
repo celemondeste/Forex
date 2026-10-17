@@ -1,5 +1,5 @@
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import joblib
@@ -88,8 +88,9 @@ def predict(db: Session, pair: str, timeframe: str = "1d", persist: bool = False
     regime = mapping[current_state]
     signal = "BUY" if regime == "Bull" else "SELL" if regime == "Bear" else "HOLD"
     as_of = frame.index[-1]
+    next_session = pd.Timestamp(as_of) + pd.offsets.BDay(1)
     payload = {"pair": pair, "timeframe": timeframe, "as_of_timestamp": as_of,
-        "forecast_horizon": "1d", "forecast_for_timestamp": as_of + timedelta(days=1),
+        "forecast_horizon": "1d", "forecast_for_timestamp": next_session.to_pydatetime(),
         "current_state": current_state, "current_regime": regime,
         "current_probabilities": current_by_name, "next_state_probabilities": next_by_name,
         "signal": signal, "model_version": record.model_version}

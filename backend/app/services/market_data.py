@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from math import isfinite
 
 import requests
 from sqlalchemy import select
@@ -42,7 +43,9 @@ def sync_daily_pair(db: Session, pair: str, outputsize: int = 5000) -> dict:
     try:
         bars = fetch_daily_bars(pair, outputsize)
         today = datetime.now(timezone.utc).date()
-        cleaned = []
+        # Providers can return the same daily timestamp more than once. Keep the
+        # last valid bar so one sync never queues duplicate unique keys.
+        cleaned_by_timestamp: dict[datetime, dict] = {}
         for item in bars:
             stamp = datetime.fromisoformat(item["datetime"]).replace(tzinfo=timezone.utc)
             if stamp.date() >= today:
@@ -51,19 +54,21 @@ def sync_daily_pair(db: Session, pair: str, outputsize: int = 5000) -> dict:
                 values = {key: float(item[key]) for key in ("open", "high", "low", "close")}
             except (KeyError, TypeError, ValueError):
                 continue
+            if any(not isfinite(value) or value <= 0 for value in values.values()):
+                continue
             # same sanity check as before: high/low must bracket open and close
             if values["high"] < max(values["open"], values["close"], values["low"]):
                 continue
             if values["low"] > min(values["open"], values["close"], values["high"]):
                 continue
             values["volume"] = None  # forex has no meaningful volume
-            cleaned.append((stamp, values))
+            cleaned_by_timestamp[stamp] = values
 
-        if not cleaned:
+        if not cleaned_by_timestamp:
             raise ValueError("No valid daily bars after validation")
 
-        run.rows_fetched = len(cleaned)
-        for stamp, values in cleaned:
+        run.rows_fetched = len(cleaned_by_timestamp)
+        for stamp, values in sorted(cleaned_by_timestamp.items()):
             existing = db.scalar(select(OhlcBar).where(OhlcBar.pair == pair,
                 OhlcBar.timeframe == "1d", OhlcBar.timestamp == stamp))
             if existing:

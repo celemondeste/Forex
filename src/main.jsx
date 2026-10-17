@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Avatar, Badge, Button, Card, FluentProvider, Input, Spinner, Tab, TabList, Tooltip, webDarkTheme } from '@fluentui/react-components';
+import { Avatar, Badge, Button, Card, FluentProvider, Input, Spinner, Tab, TabList, webDarkTheme } from '@fluentui/react-components';
 import './styles.css';
 
 const API = import.meta.env.VITE_API_URL || '/api';
@@ -23,6 +23,10 @@ async function request(path, signal) {
 }
 
 const LIVE_REFRESH_MS = 60000;
+const configuredChartRefreshSeconds = Number(import.meta.env.VITE_CHART_REFRESH_SECONDS);
+const CHART_REFRESH_SECONDS = Number.isFinite(configuredChartRefreshSeconds) && configuredChartRefreshSeconds >= 60
+  ? Math.floor(configuredChartRefreshSeconds) : 300;
+const CHART_REFRESH_MS = CHART_REFRESH_SECONDS * 1000;
 const utcDay = (value) => String(value).slice(0, 10);
 
 function useLivePrice(pair) {
@@ -34,9 +38,14 @@ function useLivePrice(pair) {
     setLiveError('');
     range.current = { day: '', high: -Infinity, low: Infinity };
     let stopped = false;
-    const controller = new AbortController();
+    let inFlight = false;
+    let lastAttemptAt = 0;
+    let controller = null;
     const poll = async () => {
-      if (document.visibilityState === 'hidden') return;
+      if (stopped || inFlight || document.visibilityState === 'hidden') return;
+      inFlight = true;
+      lastAttemptAt = Date.now();
+      controller = new AbortController();
       try {
         const result = await request(`/live/${symbolOf(pair)}`, controller.signal);
         if (stopped) return;
@@ -49,11 +58,25 @@ function useLivePrice(pair) {
         setLiveError('');
       } catch (exception) {
         if (!stopped && exception.name !== 'AbortError') setLiveError(exception.message);
+      } finally {
+        inFlight = false;
+        controller = null;
       }
     };
     poll();
-    const timer = setInterval(poll, LIVE_REFRESH_MS);
-    return () => { stopped = true; controller.abort(); clearInterval(timer); };
+    const timer = setInterval(() => {
+      if (Date.now() - lastAttemptAt >= LIVE_REFRESH_MS) poll();
+    }, 15_000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && Date.now() - lastAttemptAt >= LIVE_REFRESH_MS) poll();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      stopped = true;
+      controller?.abort();
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [pair]);
   return { live, liveError };
 }
@@ -180,23 +203,68 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const [refreshError, setRefreshError] = useState('');
+  const [lastCheckedAt, setLastCheckedAt] = useState(null);
+  const refreshRef = useRef(null);
   const { live, liveError } = useLivePrice(pair);
 
-  const load = useCallback(async () => {
-    setRefreshing(true);
+  useEffect(() => {
+    let stopped = false;
+    let inFlight = false;
+    let controller = null;
+    let lastAttemptAt = 0;
+    setLoading(true);
+    setData(null);
     setError('');
-    try {
-      setData(await request(`/search/${symbolOf(pair)}?timeframe=1d&limit=250&horizon=${HORIZON}`));
-    } catch (exception) {
-      setData(null);
-      setError(exception.message);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
+    setRefreshError('');
+    setLastCheckedAt(null);
+
+    const refresh = async (automatic = false) => {
+      if (inFlight || (automatic && document.visibilityState === 'hidden')) return;
+      inFlight = true;
+      lastAttemptAt = Date.now();
+      controller = new AbortController();
+      if (!automatic) setRefreshing(true);
+      try {
+        const result = await request(`/search/${symbolOf(pair)}?timeframe=1d&limit=250&horizon=${HORIZON}`, controller.signal);
+        if (stopped) return;
+        setData(result);
+        setError('');
+        setRefreshError('');
+        setLastCheckedAt(Date.now());
+      } catch (exception) {
+        if (stopped || exception.name === 'AbortError') return;
+        if (automatic) setRefreshError(exception.message);
+        else setError(exception.message);
+      } finally {
+        inFlight = false;
+        controller = null;
+        if (!stopped) {
+          setLoading(false);
+          setRefreshing(false);
+        }
+      }
+    };
+
+    refreshRef.current = refresh;
+    refresh();
+    const timer = setInterval(() => {
+      if (Date.now() - lastAttemptAt >= CHART_REFRESH_MS) refresh(true);
+    }, 15_000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && Date.now() - lastAttemptAt >= CHART_REFRESH_MS) refresh(true);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      stopped = true;
+      controller?.abort();
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      if (refreshRef.current === refresh) refreshRef.current = null;
+    };
   }, [pair]);
 
-  useEffect(() => { setLoading(true); setData(null); load(); }, [load]);
+  const load = () => refreshRef.current?.();
 
   const select = (next) => {
     setPair(next);
@@ -214,18 +282,20 @@ function App() {
   const probabilities = prediction?.next_state_probabilities || {};
   const status = useMemo(() => {
     if (loading) return `Ingesting daily history and fitting the Hidden Markov Model for ${pair}…`;
-    if (error) return error;
-    if (data?.prepared_steps?.length) return `Prepared ${pair}: ${data.prepared_steps.join(' and ')} on demand.`;
-    if (data?.stale) return 'Market history is stale. Refresh to sync the latest sessions.';
-    return `Updated from API${data?.as_of_timestamp ? ` · as of ${new Date(data.as_of_timestamp).toLocaleDateString()}` : ''}`;
-  }, [loading, error, data, pair]);
+    if (error) return `${error}${data ? ' · Showing the last available chart.' : ''}`;
+    if (refreshError) return `Automatic refresh failed: ${refreshError} · Showing the last available chart.`;
+    if (refreshing && data) return `Refreshing ${pair}…`;
+    if (data?.prepared_steps?.length) return `Prepared ${pair}: ${data.prepared_steps.join(' and ')} on demand · Auto refresh every ${CHART_REFRESH_SECONDS / 60} min.`;
+    if (data?.stale) return `Market history is stale · Auto refresh every ${CHART_REFRESH_SECONDS / 60} min.`;
+    return `Last checked ${lastCheckedAt ? new Date(lastCheckedAt).toLocaleTimeString() : '—'} · Auto refresh every ${CHART_REFRESH_SECONDS / 60} min${data?.as_of_timestamp ? ` · latest daily bar ${new Date(data.as_of_timestamp).toLocaleDateString()}` : ''}`;
+  }, [loading, error, refreshError, refreshing, data, pair, lastCheckedAt]);
 
   return <FluentProvider theme={webDarkTheme} className="app-theme"><div className="app-frame">
-    <header className="app-header"><a className="wordmark" href="#terminal">markov<span>fx</span></a><nav aria-label="Primary"><a className="nav-current" href="#terminal">Terminal</a><a href="#method">Method</a><a href="#operations">Operations</a></nav><div className="header-actions"><Badge appearance="tint" color={data?.stale ? 'warning' : 'informative'}>{data?.stale ? 'Data stale' : data ? 'Daily data' : 'Connecting'}</Badge><Tooltip content="Account settings" relationship="label"><Avatar name="FX" size={28}/></Tooltip></div></header>
+    <header className="app-header"><a className="wordmark" href="#terminal">markov<span>fx</span></a><nav aria-label="Primary"><a className="nav-current" href="#terminal">Terminal</a><a href="#method">Method</a><a href="#operations">Operations</a></nav><div className="header-actions"><Badge appearance="tint" color={data?.stale ? 'warning' : 'informative'}>{data?.stale ? 'Data stale' : data ? 'Daily data' : 'Connecting'}</Badge><Avatar name="FX" size={28}/></div></header>
     <main id="terminal" className="terminal-layout"><aside className="watchlist"><div className="section-kicker">Watchlist</div><div className="pair-list">{watchlist.map((item) => <button key={item} className={`pair-row ${pair === item ? 'pair-selected' : ''}`} onClick={() => select(item)}><span><b>{item}</b><small>{symbolOf(item)}=X</small></span><span><strong>{pair === item && latest ? money(latest.close) : '—'}</strong><em className={change >= 0 ? 'up' : 'down'}>{pair === item ? percent(change) : '—'}</em></span></button>)}</div><div className="watchlist-footer"><span className="section-kicker">Approved model</span><b>{model?.model_version || 'Unavailable'}</b><small>{model ? `${model.feature_version} · ${model.status}${model.metrics?.auto_approved ? ' (auto)' : ''}` : 'No approved model for this pair'}</small></div></aside>
       <section className="content-area"><div className="page-intro"><div><span className="section-kicker">Forecasting workspace</span><h1>Read the regime, not the noise.</h1><p>Search any currency pair: the API ingests its daily history, fits a Hidden Markov Model, and simulates the next {HORIZON} sessions.</p></div><Button appearance="primary" onClick={load} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh data'}</Button></div>
         <PairSearch value={pair} onSelect={select} busy={refreshing}/>
-        <div className={`notice ${error ? 'notice-error' : ''}`} role="status">{loading ? <span className="notice-loading"><Spinner size="extra-tiny"/>{status}</span> : status}</div>
+        <div className={`notice ${error || refreshError ? 'notice-error' : ''}`} role="status">{loading ? <span className="notice-loading"><Spinner size="extra-tiny"/>{status}</span> : status}</div>
         <section className="market-panel"><div className="market-bar"><div><div className="pair-title"><h2>{pair}</h2><Badge appearance="outline">1D</Badge><Badge appearance="tint" color={live ? 'success' : liveError ? 'warning' : 'informative'} title={liveError || ''}>{live ? `Live · ${new Date(live.as_of).toLocaleTimeString()}` : liveError ? 'Live unavailable' : 'Live…'}</Badge></div><div className="spot-price">{money(latest?.close)} <span className={change >= 0 ? 'up' : 'down'}>{percent(change)}</span></div><p>{bars.length ? `${bars.length} daily bars · source and timestamps provided by the API` : 'Waiting for persisted daily OHLC data'}</p></div><TabList selectedValue="1D" size="small"><Tab value="1D">1D</Tab></TabList></div><Chart bars={liveBars}/></section>
         <section className="market-panel"><div className="market-bar"><div><div className="pair-title"><h2>Forecast path</h2><Badge appearance="outline">{forecast ? `${forecast.horizon_days} sessions` : 'HMM'}</Badge></div><div className="spot-price">{forecast ? money(forecast.points.at(-1).expected) : '—'} <span className={forecast?.expected_return >= 0 ? 'up' : 'down'}>{percent(forecast?.expected_return)}</span></div><p>{forecast ? `${forecast.simulations} Monte Carlo regime paths sampled from ${forecast.model_version}` : 'Waiting for an approved model to simulate future sessions'}</p></div></div><ForecastChart bars={bars} forecast={forecast}/></section>
         <div className="analysis-grid"><Card className="signal-card"><span className="section-kicker">Latest forecast · {prediction?.forecast_horizon || '—'}</span><div className="signal-line"><div><strong className={prediction?.signal === 'SELL' ? 'down' : ''}>{prediction?.signal || '—'}</strong><span>{prediction?.current_regime ? `Current regime · ${prediction.current_regime}` : 'No approved model forecast'}</span></div><Badge color={prediction?.signal === 'BUY' ? 'success' : prediction ? 'warning' : 'informative'} appearance="tint">{prediction?.forecast_for_timestamp ? `For ${new Date(prediction.forecast_for_timestamp).toLocaleDateString()}` : 'Not available'}</Badge></div><p>{prediction ? `Current-state posterior and next-state transition probabilities are returned separately by ${prediction.model_version}.` : 'An approved model is required before the API can return a forecast.'}</p><div className="confidence-row"><span>Current state</span><b>{prediction ? `${(Math.max(...Object.values(prediction.current_probabilities)) * 100).toFixed(0)}%` : '—'}</b><span>Posterior probability</span></div></Card>
