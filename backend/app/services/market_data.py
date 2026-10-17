@@ -1,45 +1,71 @@
 from datetime import datetime, timezone
 
-import pandas as pd
-import yfinance as yf
+import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.models import DataSyncRun, OhlcBar
 
-
-def yahoo_ticker(pair: str) -> str:
-    return pair.replace("/", "") + "=X"
+TWELVE_DATA_URL = "https://api.twelvedata.com/time_series"
 
 
-def sync_daily_pair(db: Session, pair: str, period: str = "10y") -> dict:
+def fetch_daily_bars(pair: str, outputsize: int = 5000) -> list[dict]:
+    """Fetch daily OHLC bars for a pair like 'EUR/USD' from Twelve Data (oldest first)."""
+    if not settings.twelve_data_api_key:
+        raise ValueError("TWELVE_DATA_API_KEY is not configured")
+    response = requests.get(
+        TWELVE_DATA_URL,
+        params={
+            "symbol": pair,  # Twelve Data uses the same EUR/USD format as this project
+            "interval": "1day",
+            "outputsize": outputsize,  # 1..5000
+            "timezone": "UTC",
+            "apikey": settings.twelve_data_api_key,
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if data.get("status") == "error":
+        raise ValueError(f"Twelve Data error {data.get('code')}: {data.get('message')}")
+    values = data.get("values") or []
+    if not values:
+        raise ValueError("Twelve Data returned no daily bars")
+    return sorted(values, key=lambda item: item["datetime"])
+
+
+def sync_daily_pair(db: Session, pair: str, outputsize: int = 5000) -> dict:
     run = DataSyncRun(pair=pair, timeframe="1d")
     db.add(run)
     db.flush()
     try:
-        raw = yf.download(yahoo_ticker(pair), period=period, interval="1d", auto_adjust=False, progress=False)
-        if raw.empty:
-            raise ValueError("Yahoo Finance returned no daily bars")
-        if isinstance(raw.columns, pd.MultiIndex):
-            raw.columns = raw.columns.get_level_values(0)
-        raw.columns = [str(column).lower() for column in raw.columns]
-        required = {"open", "high", "low", "close"}
-        if not required.issubset(raw.columns):
-            raise ValueError("Yahoo Finance response is missing OHLC columns")
-        raw = raw.dropna(subset=list(required))
-        raw = raw[(raw["high"] >= raw[["open", "close", "low"]].max(axis=1)) &
-                  (raw["low"] <= raw[["open", "close", "high"]].min(axis=1))]
-        raw = raw[~raw.index.duplicated(keep="last")]
-        run.rows_fetched = len(raw)
-        for date, row in raw.iterrows():
-            stamp_value = pd.Timestamp(date)
-            stamp = (stamp_value.tz_localize("UTC") if stamp_value.tzinfo is None
-                     else stamp_value.tz_convert("UTC")).to_pydatetime()
+        bars = fetch_daily_bars(pair, outputsize)
+        today = datetime.now(timezone.utc).date()
+        cleaned = []
+        for item in bars:
+            stamp = datetime.fromisoformat(item["datetime"]).replace(tzinfo=timezone.utc)
+            if stamp.date() >= today:
+                continue  # skip today's bar: it is still forming
+            try:
+                values = {key: float(item[key]) for key in ("open", "high", "low", "close")}
+            except (KeyError, TypeError, ValueError):
+                continue
+            # same sanity check as before: high/low must bracket open and close
+            if values["high"] < max(values["open"], values["close"], values["low"]):
+                continue
+            if values["low"] > min(values["open"], values["close"], values["high"]):
+                continue
+            values["volume"] = None  # forex has no meaningful volume
+            cleaned.append((stamp, values))
+
+        if not cleaned:
+            raise ValueError("No valid daily bars after validation")
+
+        run.rows_fetched = len(cleaned)
+        for stamp, values in cleaned:
             existing = db.scalar(select(OhlcBar).where(OhlcBar.pair == pair,
                 OhlcBar.timeframe == "1d", OhlcBar.timestamp == stamp))
-            values = {key: float(row[key]) for key in required}
-            volume = row.get("volume")
-            values["volume"] = None if pd.isna(volume) else float(volume)
             if existing:
                 for key, value in values.items():
                     setattr(existing, key, value)
@@ -47,6 +73,7 @@ def sync_daily_pair(db: Session, pair: str, period: str = "10y") -> dict:
             else:
                 db.add(OhlcBar(pair=pair, timeframe="1d", timestamp=stamp, **values))
                 run.rows_inserted += 1
+
         run.status = "complete"
         run.finished_at = datetime.now(timezone.utc)
         db.commit()

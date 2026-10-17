@@ -1,3 +1,4 @@
+from app.services.scheduler import start_auto_update, stop_auto_update
 from contextlib import asynccontextmanager
 import os
 from pathlib import Path
@@ -23,7 +24,9 @@ async def lifespan(_: FastAPI):
                 connection.execute(text("IF DB_ID(N'ForexPrediction') IS NULL CREATE DATABASE ForexPrediction"))
             admin_engine.dispose()
         Base.metadata.create_all(bind=engine)
-    yield
+        start_auto_update()
+        yield
+        await stop_auto_update()
 
 
 app = FastAPI(title="Forex Prediction API", version="0.1.0", lifespan=lifespan)

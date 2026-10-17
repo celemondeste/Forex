@@ -8,10 +8,10 @@ pydantic==2.10.6
 pydantic-core==2.27.2
 pydantic-settings==2.7.1
 typing-extensions==4.12.2
-yfinance>=0.2.50,<1
 pandas>=2.2,<3
 numpy>=2.0,<3
 scikit-learn>=1.5,<2
 hmmlearn>=0.3.2,<1
 joblib>=1.4,<2
 alembic>=1.13,<2
+requests>=2.31,<3

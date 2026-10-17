@@ -1,3 +1,4 @@
+from app.services.live import get_live_price
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -38,7 +39,12 @@ def health(db: Session = Depends(get_db)):
         return {"status": "ok", "database": "connected"}
     except Exception as exc:
         raise HTTPException(503, "Database unavailable") from exc
-
+@router.get("/live/{pair}")
+def live(pair: str):
+    try:
+        return get_live_price(normalize_pair(pair))
+    except Exception as exc:
+        raise HTTPException(502, f"Live price unavailable: {exc}") from exc
 
 @router.get("/market/{pair}", response_model=MarketResponse)
 def market(pair: str, timeframe: str = Query("1d", pattern="^1d$"), limit: int = Query(500, ge=1, le=5000), db: Session = Depends(get_db)):

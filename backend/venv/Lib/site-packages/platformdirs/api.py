@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -44,27 +45,9 @@ class PlatformDirsABC(ABC):  # ruff:ignore[too-many-public-methods]
         :param use_site_for_root: See `use_site_for_root`.
 
         """
-        self.appname = appname  #: The name of the application.
+        self.appname = appname
         self.appauthor = appauthor
-        """The name of the app author or distributing body for this application.
-
-        Typically, it is the owning company name. Defaults to `appname`. You may pass ``False`` to disable it.
-
-        .. note::
-
-            On Windows, the directory structure is ``<base>/<appauthor>/<appname>``. When ``appauthor`` is ``None`` (the
-            default), it falls back to ``appname``, resulting in ``<base>/<appname>/<appname>`` (e.g.
-            ``AppData/Local/myapp/myapp``). Pass ``appauthor=False`` to omit the author directory entirely and get
-            ``<base>/<appname>``.
-
-        """
         self.version = version
-        """An optional version path element to append to the path.
-
-        You might want to use this if you want multiple versions of your app to be able to run independently. If used,
-        this would typically be ``<major>.<minor>``.
-
-        """
         self.roaming = roaming
         """Whether to use the roaming appdata directory on Windows.
 
@@ -87,9 +70,10 @@ class PlatformDirsABC(ABC):  # ruff:ignore[too-many-public-methods]
 
         """
         self.ensure_exists = ensure_exists
-        """Optionally create the directory (and any missing parents) upon access if it does not exist.
+        """Create the directory a property returns, with missing parents, each time the property is read.
 
-        By default, no directories are created.
+        Media directories qualify only when the user set them through XDG. platformdirs never creates fonts, bin,
+        applications or default media directories. Off by default.
 
         """
         self.use_site_for_root = use_site_for_root
@@ -99,14 +83,52 @@ class PlatformDirsABC(ABC):  # ruff:ignore[too-many-public-methods]
         variables (e.g. ``XDG_DATA_HOME``) are bypassed for the redirected directories.
 
         """
-        for name, value in (("appname", appname), ("appauthor", appauthor), ("version", version)):
-            if not value:
-                continue
-            # os.path.join discards the base when a later component has a root or a drive, and ``..`` climbs out of it.
-            drive, tail = os.path.splitdrive(value)
-            if drive or tail.startswith(("/", "\\")) or ".." in tail.replace("\\", "/").split("/"):
-                msg = f"{name} must stay inside the base directory, got {value!r}"
-                raise ValueError(msg)
+
+    @property
+    def appname(self) -> str | None:
+        """The name of the application."""
+        return self._appname
+
+    @appname.setter
+    def appname(self, value: str | None) -> None:
+        _ensure_inside_base("appname", value)
+        self._appname = value
+
+    @property
+    def appauthor(self) -> str | Literal[False] | None:
+        """The name of the app author or distributing body for this application.
+
+        Typically, it is the owning company name. Defaults to `appname`. You may pass ``False`` to disable it.
+
+        .. note::
+
+            On Windows, the directory structure is ``<base>/<appauthor>/<appname>``. When ``appauthor`` is ``None`` (the
+            default), it falls back to ``appname``, resulting in ``<base>/<appname>/<appname>`` (e.g.
+            ``AppData/Local/myapp/myapp``). Pass ``appauthor=False`` to omit the author directory entirely and get
+            ``<base>/<appname>``.
+
+        """
+        return self._appauthor
+
+    @appauthor.setter
+    def appauthor(self, value: str | Literal[False] | None) -> None:
+        _ensure_inside_base("appauthor", value)
+        self._appauthor = value
+
+    @property
+    def version(self) -> str | None:
+        """An optional version path element to append to the path.
+
+        You might want to use this if you want multiple versions of your app to be able to run independently. If used,
+        this would typically be ``<major>.<minor>``.
+
+        """
+        return self._version
+
+    @version.setter
+    def version(self, value: str | None) -> None:
+        _ensure_inside_base("version", value)
+        self._version = value
 
     def _append_app_name_and_version(self, *base: str) -> str:
         path = self._join_app_name_and_version(*base)
@@ -122,8 +144,19 @@ class PlatformDirsABC(ABC):  # ruff:ignore[too-many-public-methods]
         return os.path.join(base[0], *params)  # ruff:ignore[os-path-join]
 
     def _optionally_create_directory(self, path: str) -> None:
-        if self.ensure_exists:
-            Path(path).mkdir(parents=True, exist_ok=True)
+        if not self.ensure_exists:
+            return
+        # expanduser leaves "~" when the home is unknown, and creating it would make a "~" directory in the cwd.
+        if path.startswith("~"):
+            msg = f"could not determine the home directory, refusing to create {path!r}"
+            raise RuntimeError(msg)
+        Path(path).mkdir(parents=True, exist_ok=True)
+
+    def _optionally_create_media_directory(self, path: str) -> None:
+        # Only called for a media directory the user configured. Media directories are often symlinks to removable or
+        # network storage, so a dangling link is returned as-is, like before ensure_exists covered them.
+        with suppress(FileExistsError):
+            self._optionally_create_directory(path)
 
     def _select_site_dirs(self, dirs: list[str]) -> str:
         # Site lists are built without touching the disk, so ensure_exists only creates what the caller gets back.
@@ -508,6 +541,16 @@ class PlatformDirsABC(ABC):  # ruff:ignore[too-many-public-methods]
         """:yield: all user and site runtime paths."""
         for path in self.iter_runtime_dirs():
             yield Path(path)
+
+
+def _ensure_inside_base(name: str, value: str | Literal[False] | None) -> None:
+    if not value:
+        return
+    # os.path.join discards the base when a later component has a root or a drive, and ``..`` climbs out of it.
+    drive, tail = os.path.splitdrive(value)
+    if drive or tail.startswith(("/", "\\")) or ".." in tail.replace("\\", "/").split("/"):
+        msg = f"{name} must stay inside the base directory, got {value!r}"
+        raise ValueError(msg)
 
 
 def _unique(dirs: Iterable[str]) -> Iterator[str]:

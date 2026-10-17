@@ -30,7 +30,10 @@ else:
 
 
 def _set_platform_dir_class() -> type[PlatformDirsABC]:
-    if os.getenv("ANDROID_DATA") == "/data" and os.getenv("ANDROID_ROOT") == "/system":
+    # Every Android build of CPython has sys.getandroidapilevel, even in a process started with a cleared environment.
+    if hasattr(sys, "getandroidapilevel") or (
+        os.getenv("ANDROID_DATA") == "/data" and os.getenv("ANDROID_ROOT") == "/system"
+    ):
         if os.getenv("SHELL") or os.getenv("PREFIX"):
             return _Result
 
@@ -272,6 +275,8 @@ def user_log_dir(  # ruff:ignore[too-many-arguments, too-many-positional-argumen
     opinion: bool = True,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
     ensure_exists: bool = False,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
     use_site_for_root: bool = False,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
+    *,
+    roaming: bool = False,
 ) -> str:
     """:param appname: See `appname <platformdirs.api.PlatformDirsABC.appname>`.
     :param appauthor: See `appauthor <platformdirs.api.PlatformDirsABC.appauthor>`.
@@ -279,6 +284,7 @@ def user_log_dir(  # ruff:ignore[too-many-arguments, too-many-positional-argumen
     :param opinion: See `opinion <platformdirs.api.PlatformDirsABC.opinion>`.
     :param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
     :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+    :param roaming: See `roaming <platformdirs.api.PlatformDirsABC.roaming>`.
 
     :returns: log directory tied to the user
 
@@ -287,6 +293,7 @@ def user_log_dir(  # ruff:ignore[too-many-arguments, too-many-positional-argumen
         appname=appname,
         appauthor=appauthor,
         version=version,
+        roaming=roaming,
         opinion=opinion,
         ensure_exists=ensure_exists,
         use_site_for_root=use_site_for_root,
@@ -736,6 +743,8 @@ def user_log_path(  # ruff:ignore[too-many-arguments, too-many-positional-argume
     opinion: bool = True,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
     ensure_exists: bool = False,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
     use_site_for_root: bool = False,  # ruff:ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument]
+    *,
+    roaming: bool = False,
 ) -> Path:
     """:param appname: See `appname <platformdirs.api.PlatformDirsABC.appname>`.
     :param appauthor: See `appauthor <platformdirs.api.PlatformDirsABC.appauthor>`.
@@ -743,6 +752,7 @@ def user_log_path(  # ruff:ignore[too-many-arguments, too-many-positional-argume
     :param opinion: See `opinion <platformdirs.api.PlatformDirsABC.opinion>`.
     :param ensure_exists: See `ensure_exists <platformdirs.api.PlatformDirsABC.ensure_exists>`.
     :param use_site_for_root: See `use_site_for_root <platformdirs.api.PlatformDirsABC.use_site_for_root>`.
+    :param roaming: See `roaming <platformdirs.api.PlatformDirsABC.roaming>`.
 
     :returns: log path tied to the user
 
@@ -751,6 +761,7 @@ def user_log_path(  # ruff:ignore[too-many-arguments, too-many-positional-argume
         appname=appname,
         appauthor=appauthor,
         version=version,
+        roaming=roaming,
         opinion=opinion,
         ensure_exists=ensure_exists,
         use_site_for_root=use_site_for_root,

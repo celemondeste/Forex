@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     auto_prepare_period: str = "5y"
     auto_prepare_stale_days: int = 4
     forecast_horizon_days: int = 30
+    twelve_data_api_key: str = ""
 
     model_config = SettingsConfigDict(env_file=(".env", "backend/.env"), extra="ignore")
 

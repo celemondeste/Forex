@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ntpath
 import os
 import sys
 from functools import cache
@@ -143,7 +144,7 @@ class Windows(PlatformDirsABC):  # ruff:ignore[too-many-public-methods]
     @property
     def user_publicshare_dir(self) -> str:
         r"""Public share directory e.g. ``C:\Users\Public``."""
-        if (path := os.environ.get("PUBLIC")) is None:
+        if not (path := os.environ.get("PUBLIC")):
             path = str(Path("~").expanduser().parent / "Public")
         return os.path.normpath(path)
 
@@ -208,8 +209,7 @@ def get_win_folder_from_env_vars(csidl_name: str) -> str:
     if env_var_name is None:
         msg = f"Unknown CSIDL name: {csidl_name}"
         raise ValueError(msg)
-    result = os.environ.get(env_var_name)
-    if result is None:
+    if not (result := os.environ.get(env_var_name)):
         msg = f"Unset environment variable: {env_var_name}"
         raise ValueError(msg)
     return result
@@ -218,26 +218,26 @@ def get_win_folder_from_env_vars(csidl_name: str) -> str:
 def get_win_folder_if_csidl_name_not_env_var(csidl_name: str) -> str | None:  # ruff:ignore[too-many-return-statements]
     """Get a folder for a CSIDL name that does not exist as an environment variable."""
     if csidl_name == "CSIDL_PERSONAL":
-        return os.path.join(os.path.normpath(os.environ["USERPROFILE"]), "Documents")  # ruff:ignore[os-path-join]
+        return os.path.join(os.path.normpath(_non_empty_env("USERPROFILE")), "Documents")  # ruff:ignore[os-path-join]
 
     if csidl_name == "CSIDL_DOWNLOADS":
-        return os.path.join(os.path.normpath(os.environ["USERPROFILE"]), "Downloads")  # ruff:ignore[os-path-join]
+        return os.path.join(os.path.normpath(_non_empty_env("USERPROFILE")), "Downloads")  # ruff:ignore[os-path-join]
 
     if csidl_name == "CSIDL_MYPICTURES":
-        return os.path.join(os.path.normpath(os.environ["USERPROFILE"]), "Pictures")  # ruff:ignore[os-path-join]
+        return os.path.join(os.path.normpath(_non_empty_env("USERPROFILE")), "Pictures")  # ruff:ignore[os-path-join]
 
     if csidl_name == "CSIDL_MYVIDEO":
-        return os.path.join(os.path.normpath(os.environ["USERPROFILE"]), "Videos")  # ruff:ignore[os-path-join]
+        return os.path.join(os.path.normpath(_non_empty_env("USERPROFILE")), "Videos")  # ruff:ignore[os-path-join]
 
     if csidl_name == "CSIDL_MYMUSIC":
-        return os.path.join(os.path.normpath(os.environ["USERPROFILE"]), "Music")  # ruff:ignore[os-path-join]
+        return os.path.join(os.path.normpath(_non_empty_env("USERPROFILE")), "Music")  # ruff:ignore[os-path-join]
 
     if csidl_name == "CSIDL_DESKTOPDIRECTORY":
-        return os.path.join(os.path.normpath(os.environ["USERPROFILE"]), "Desktop")  # ruff:ignore[os-path-join]
+        return os.path.join(os.path.normpath(_non_empty_env("USERPROFILE")), "Desktop")  # ruff:ignore[os-path-join]
 
     if csidl_name == "CSIDL_PROGRAMS":
         return os.path.join(  # ruff:ignore[os-path-join]
-            os.path.normpath(os.environ["APPDATA"]),
+            os.path.normpath(_non_empty_env("APPDATA")),
             "Microsoft",
             "Windows",
             "Start Menu",
@@ -246,13 +246,19 @@ def get_win_folder_if_csidl_name_not_env_var(csidl_name: str) -> str | None:  # 
 
     if csidl_name == "CSIDL_COMMON_PROGRAMS":
         return os.path.join(  # ruff:ignore[os-path-join]
-            os.path.normpath(os.environ.get("PROGRAMDATA", os.environ.get("ALLUSERSPROFILE", "C:\\ProgramData"))),
+            os.path.normpath(os.environ.get("PROGRAMDATA") or os.environ.get("ALLUSERSPROFILE") or "C:\\ProgramData"),
             "Microsoft",
             "Windows",
             "Start Menu",
             "Programs",
         )
     return None
+
+
+def _non_empty_env(name: str) -> str:
+    if value := os.environ.get(name):
+        return value
+    raise KeyError(name)  # same error os.environ[name] gives for an unset variable
 
 
 def get_win_folder_from_registry(csidl_name: str) -> str:
@@ -324,7 +330,6 @@ def _build_get_win_folder_via_ctypes() -> Callable[[str], str]:
         Structure,
         WinDLL,
         byref,
-        create_unicode_buffer,
         wintypes,
     )
 
@@ -346,10 +351,6 @@ def _build_get_win_folder_via_ctypes() -> Callable[[str], str]:
     shell32.SHGetKnownFolderPath.restype = HRESULT
     shell32.SHGetKnownFolderPath.argtypes = [POINTER(_GUID), wintypes.DWORD, wintypes.HANDLE, POINTER(wintypes.LPWSTR)]
 
-    kernel32 = WinDLL("kernel32")
-    kernel32.GetShortPathNameW.restype = wintypes.DWORD
-    kernel32.GetShortPathNameW.argtypes = [wintypes.LPWSTR, wintypes.LPWSTR, wintypes.DWORD]
-
     def resolve(csidl_name: str) -> str:
         folder_guid = _KNOWN_FOLDER_GUIDS.get(csidl_name)
         if folder_guid is None:
@@ -367,11 +368,6 @@ def _build_get_win_folder_via_ctypes() -> Callable[[str], str]:
         if result is None:
             msg = f"SHGetKnownFolderPath returned NULL for {csidl_name}"
             raise ValueError(msg)
-
-        if any(ord(c) > 255 for c in result):  # ruff:ignore[magic-value-comparison]
-            buf = create_unicode_buffer(1024)
-            if kernel32.GetShortPathNameW(result, buf, 1024):
-                result = buf.value
 
         return result
 
@@ -413,9 +409,15 @@ def get_win_folder(csidl_name: str) -> str:
 
     """
     env_var = f"WIN_PD_OVERRIDE_{csidl_name.removeprefix('CSIDL_')}"
-    if override := os.environ.get(env_var, "").strip():
+    if _is_fully_qualified(override := os.environ.get(env_var, "").strip()):
         return override
     return _resolve_win_folder(csidl_name)
+
+
+def _is_fully_qualified(path: str) -> bool:
+    # ntpath.isabs changed for rooted paths without a drive in 3.13 and for a bare UNC share in 3.11
+    drive, tail = ntpath.splitdrive(path)
+    return drive.startswith(("\\", "/")) or (bool(drive) and tail.startswith(("\\", "/")))
 
 
 __all__ = [

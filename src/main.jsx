@@ -22,6 +22,55 @@ async function request(path, signal) {
   return response.json();
 }
 
+const LIVE_REFRESH_MS = 60000;
+const utcDay = (value) => String(value).slice(0, 10);
+
+function useLivePrice(pair) {
+  const [live, setLive] = useState(null);
+  const [liveError, setLiveError] = useState('');
+  const range = useRef({ day: '', high: -Infinity, low: Infinity });
+  useEffect(() => {
+    setLive(null);
+    setLiveError('');
+    range.current = { day: '', high: -Infinity, low: Infinity };
+    let stopped = false;
+    const controller = new AbortController();
+    const poll = async () => {
+      if (document.visibilityState === 'hidden') return;
+      try {
+        const result = await request(`/live/${symbolOf(pair)}`, controller.signal);
+        if (stopped) return;
+        const day = utcDay(result.as_of);
+        const previous = range.current;
+        range.current = previous.day === day
+          ? { day, high: Math.max(previous.high, result.price), low: Math.min(previous.low, result.price) }
+          : { day, high: result.price, low: result.price };
+        setLive({ ...result, day, high: range.current.high, low: range.current.low });
+        setLiveError('');
+      } catch (exception) {
+        if (!stopped && exception.name !== 'AbortError') setLiveError(exception.message);
+      }
+    };
+    poll();
+    const timer = setInterval(poll, LIVE_REFRESH_MS);
+    return () => { stopped = true; controller.abort(); clearInterval(timer); };
+  }, [pair]);
+  return { live, liveError };
+}
+
+// Merge the latest live price into today's candle (or append today's candle if it is not stored yet).
+function withLiveCandle(bars, live) {
+  if (!bars.length || !live) return bars;
+  const last = bars.at(-1);
+  const lastDay = utcDay(last.timestamp);
+  if (lastDay === live.day) {
+    return [...bars.slice(0, -1), { ...last, close: live.price, high: Math.max(last.high, live.high), low: Math.min(last.low, live.low) }];
+  }
+  if (lastDay > live.day) return bars;
+  const open = last.close;
+  return [...bars, { timestamp: `${live.day}T00:00:00Z`, open, high: Math.max(open, live.high), low: Math.min(open, live.low), close: live.price, live: true }];
+}
+
 function Chart({ bars }) {
   if (!bars?.length) return <div className="chart-empty">No market history yet. Search a currency pair to ingest its daily history.</div>;
   const width = 1000, height = 270, pad = { top: 18, right: 12, bottom: 22, left: 12 };
@@ -131,6 +180,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const { live, liveError } = useLivePrice(pair);
 
   const load = useCallback(async () => {
     setRefreshing(true);
@@ -154,8 +204,9 @@ function App() {
   };
 
   const bars = data?.bars || [];
-  const latest = bars.at(-1);
-  const prior = bars.at(-2);
+  const liveBars = withLiveCandle(bars, live);
+  const latest = liveBars.at(-1);
+  const prior = liveBars.at(-2);
   const change = latest && prior ? latest.close / prior.close - 1 : null;
   const prediction = data?.prediction || null;
   const forecast = data?.forecast || null;
@@ -175,13 +226,13 @@ function App() {
       <section className="content-area"><div className="page-intro"><div><span className="section-kicker">Forecasting workspace</span><h1>Read the regime, not the noise.</h1><p>Search any currency pair: the API ingests its daily history, fits a Hidden Markov Model, and simulates the next {HORIZON} sessions.</p></div><Button appearance="primary" onClick={load} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh data'}</Button></div>
         <PairSearch value={pair} onSelect={select} busy={refreshing}/>
         <div className={`notice ${error ? 'notice-error' : ''}`} role="status">{loading ? <span className="notice-loading"><Spinner size="extra-tiny"/>{status}</span> : status}</div>
-        <section className="market-panel"><div className="market-bar"><div><div className="pair-title"><h2>{pair}</h2><Badge appearance="outline">1D</Badge></div><div className="spot-price">{money(latest?.close)} <span className={change >= 0 ? 'up' : 'down'}>{percent(change)}</span></div><p>{bars.length ? `${bars.length} daily bars · source and timestamps provided by the API` : 'Waiting for persisted daily OHLC data'}</p></div><TabList selectedValue="1D" size="small"><Tab value="1D">1D</Tab></TabList></div><Chart bars={bars}/></section>
+        <section className="market-panel"><div className="market-bar"><div><div className="pair-title"><h2>{pair}</h2><Badge appearance="outline">1D</Badge><Badge appearance="tint" color={live ? 'success' : liveError ? 'warning' : 'informative'} title={liveError || ''}>{live ? `Live · ${new Date(live.as_of).toLocaleTimeString()}` : liveError ? 'Live unavailable' : 'Live…'}</Badge></div><div className="spot-price">{money(latest?.close)} <span className={change >= 0 ? 'up' : 'down'}>{percent(change)}</span></div><p>{bars.length ? `${bars.length} daily bars · source and timestamps provided by the API` : 'Waiting for persisted daily OHLC data'}</p></div><TabList selectedValue="1D" size="small"><Tab value="1D">1D</Tab></TabList></div><Chart bars={liveBars}/></section>
         <section className="market-panel"><div className="market-bar"><div><div className="pair-title"><h2>Forecast path</h2><Badge appearance="outline">{forecast ? `${forecast.horizon_days} sessions` : 'HMM'}</Badge></div><div className="spot-price">{forecast ? money(forecast.points.at(-1).expected) : '—'} <span className={forecast?.expected_return >= 0 ? 'up' : 'down'}>{percent(forecast?.expected_return)}</span></div><p>{forecast ? `${forecast.simulations} Monte Carlo regime paths sampled from ${forecast.model_version}` : 'Waiting for an approved model to simulate future sessions'}</p></div></div><ForecastChart bars={bars} forecast={forecast}/></section>
         <div className="analysis-grid"><Card className="signal-card"><span className="section-kicker">Latest forecast · {prediction?.forecast_horizon || '—'}</span><div className="signal-line"><div><strong className={prediction?.signal === 'SELL' ? 'down' : ''}>{prediction?.signal || '—'}</strong><span>{prediction?.current_regime ? `Current regime · ${prediction.current_regime}` : 'No approved model forecast'}</span></div><Badge color={prediction?.signal === 'BUY' ? 'success' : prediction ? 'warning' : 'informative'} appearance="tint">{prediction?.forecast_for_timestamp ? `For ${new Date(prediction.forecast_for_timestamp).toLocaleDateString()}` : 'Not available'}</Badge></div><p>{prediction ? `Current-state posterior and next-state transition probabilities are returned separately by ${prediction.model_version}.` : 'An approved model is required before the API can return a forecast.'}</p><div className="confidence-row"><span>Current state</span><b>{prediction ? `${(Math.max(...Object.values(prediction.current_probabilities)) * 100).toFixed(0)}%` : '—'}</b><span>Posterior probability</span></div></Card>
           <Card className="regime-card"><span className="section-kicker">Next-state probabilities</span><h2>{prediction ? `From ${prediction.current_regime}` : 'Waiting for approved model'}</h2><div className="probability-list">{['Bull', 'Sideways', 'Bear'].map((regime) => <div key={regime}><span>{regime}</span><b>{probabilities[regime] == null ? '—' : `${(probabilities[regime] * 100).toFixed(1)}%`}</b><i style={{ background: `linear-gradient(90deg, ${regime === 'Bull' ? '#71c99b' : regime === 'Bear' ? '#d68a7e' : '#b7aa7a'} ${((probabilities[regime] || 0) * 100).toFixed(1)}%, #29372f ${((probabilities[regime] || 0) * 100).toFixed(1)}%)` }}/></div>)}</div><p>Transition probabilities are distinct from the current-state posterior.</p></Card></div>
-        <section id="operations" className="operations"><div><span className="section-kicker">Data lineage</span><h2>Every forecast has a route back to its source.</h2></div><div className="lineage"><div><b>Yahoo Finance</b><span>daily OHLC ingestion</span></div><i>→</i><div><b>SQL database</b><span>validated, idempotent bars</span></div><i>→</i><div><b>Approved HMM</b><span>{model?.model_version || 'No model selected'}</span></div><i>→</i><div><b>FastAPI</b><span>versioned prediction contract</span></div></div><div className="run-note"><Badge color={data?.stale ? 'warning' : 'success'} appearance="tint">{data ? data.stale ? 'Sync needed' : 'API connected' : 'No data'}</Badge><span>{data ? `${bars.length} bars returned. Model status: ${model?.status || 'no approved model'}.` : 'Search a pair to ingest its daily history.'}</span></div></section>
+        <section id="operations" className="operations"><div><span className="section-kicker">Data lineage</span><h2>Every forecast has a route back to its source.</h2></div><div className="lineage"><div><b>Twelve Data</b><span>daily OHLC ingestion</span></div><i>→</i><div><b>SQL database</b><span>validated, idempotent bars</span></div><i>→</i><div><b>Approved HMM</b><span>{model?.model_version || 'No model selected'}</span></div><i>→</i><div><b>FastAPI</b><span>versioned prediction contract</span></div></div><div className="run-note"><Badge color={data?.stale ? 'warning' : 'success'} appearance="tint">{data ? data.stale ? 'Sync needed' : 'API connected' : 'No data'}</Badge><span>{data ? `${bars.length} bars returned. Model status: ${model?.status || 'no approved model'}.` : 'Search a pair to ingest its daily history.'}</span></div></section>
         <section id="method" className="method"><div><span className="section-kicker">Method</span><h2>Small, explainable inputs.</h2><p>Log return, intrabar return, daily range, and rolling 20-period volatility are standardized using training-window statistics. The forecast path resamples regimes through the transition matrix and draws log returns from each regime's fitted Gaussian.</p></div><div className="method-metrics"><div><b>3</b><span>market states</span></div><div><b>20</b><span>volatility window</span></div><div><b>{forecast?.simulations || 600}</b><span>simulated paths</span></div><div><b>{model?.feature_version || 'v1'}</b><span>feature version</span></div></div></section>
-      </section></main><footer>Probabilistic analysis only; no orders are placed. <span>Market data via backend yfinance ingestion</span></footer>
+      </section></main><footer>Probabilistic analysis only; no orders are placed. <span>Market data via backend Twelve Data ingestion</span></footer>
   </div></FluentProvider>;
 }
 
